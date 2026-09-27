@@ -697,7 +697,7 @@ enum WidgetVendorIdentity {
             "qodercn": "#2ADB5C", "qoder": "#2ADB5C", "reasonix": "#4D6BFE",
             "dsh": "#4D6BFE", "cherrystudio": "#EA5E5D", "lmstudio": "#8074E8",
             "unsloth": "#40B85A", "cohere": "#66937D", "xiaomi": "#000000",
-            "mimo": "#000000", "micode": "#000000", "typesafe": "#000000", "minimax": "#F23F5D",
+            "mimo": "#000000", "micode": "#000000", "typesafe": "#000000", "minimax": "#F23F5D", "mavis": "#F23F5D",
             "doubao": "#5064FF", "hunyuan": "#277DE3", "volcengine": "#2A88FF",
             "nvidia": "#74B71B",
             "trae": "#32F08C", "alibaba": "#7771F4", "thirdparty": "#8090A6",

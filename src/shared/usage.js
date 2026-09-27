@@ -508,6 +508,7 @@ function emptySession(client, id) {
     projectLabel: '',
     title: '',
     sessionKind: '',
+    agent: '',
     models: {},
     modelCosts: {},
     providers: {}
@@ -538,6 +539,13 @@ function mergeSession(target, source) {
   } else if (target.projectId === sourceProjectId && !target.projectLabel && source.projectLabel) {
     target.projectLabel = String(source.projectLabel);
   }
+  // First-sighting agent copy: emptySession() starts every session with
+  // agent='', so without an explicit copy here the very first row that supplies
+  // an agent name wins, and later rows for the same session can never overwrite
+  // it with ''. This is what the mavis adapter relies on to keep its
+  // sub-agent (coder / explore / general / mavis / verifier / worker) names.
+  const sourceAgent = String(source.agent || '').trim();
+  if (sourceAgent && !String(target.agent || '').trim()) target.agent = sourceAgent;
   // Occupancy is a snapshot, not a sum. The two halves move together and must
   // never be mixed across sources, so a source carrying a window replaces both
   // and one carrying none leaves both alone.
@@ -622,6 +630,7 @@ function sessionFromRow(row) {
   session.projectLabel = String(row.projectLabel || row.project_label || '').trim();
   session.title = normalizeSessionTitle(firstString(row, SESSION_TITLE_KEYS));
   session.sessionKind = normalizeSessionKind(row.sessionKind || row.session_kind);
+  session.agent = String(row.agentName || row.agent_name || row.agent || '').trim();
   let model = detectModel(row, client);
   if (client === 'cursor' && model === 'auto') model = 'cursor-auto';
   if (model && session.totalTokens > 0) session.models[model] = (session.models[model] || 0) + session.totalTokens;
@@ -658,6 +667,10 @@ function normalizeSession(input, fallbackKey) {
   session.projectLabel = String(input.projectLabel || input.project_label || '').trim();
   session.title = normalizeSessionTitle(input.title || input.sessionTitle || input.session_title);
   session.sessionKind = normalizeSessionKind(input.sessionKind || input.session_kind);
+  // Carried through unchanged: the mavis adapter's sub-agent names (coder /
+  // explore / general / mavis / verifier / worker) ride alongside the session
+  // id so per-agent breakdowns survive the archive. Other clients leave it ''.
+  if (input.agent) session.agent = String(input.agent).trim();
   if (input.models && typeof input.models === 'object') {
     for (const [model, value] of Object.entries(input.models)) {
       const key = normalizeModelNameForClient(model, client);

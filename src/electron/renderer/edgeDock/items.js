@@ -118,8 +118,8 @@ const SESSION_CELL_DETAILS = Object.freeze(['clients', 'rate']);
     return items;
   }
 
-  function defaultEdgeDockItems(providerIds = []) {
-    return providerIds.slice(0, DEFAULT_LIMIT_COUNT).map((provider) => ({
+  function defaultEdgeDockItems(providerIds = [], stats = null) {
+    const limitItems = providerIds.slice(0, DEFAULT_LIMIT_COUNT).map((provider) => ({
       type: 'limit',
       provider,
       hiddenAccounts: [],
@@ -127,6 +127,13 @@ const SESSION_CELL_DETAILS = Object.freeze(['clients', 'rate']);
       showSessions: true,
       accountMode: provider === 'codex' ? 'active' : 'lowest'
     }));
+    // 当 stats 有任何 tracked client 的 token 数据时，加一个 today stat 让
+    // locallyParsed clients (mavis / qodercn / proma / ...) 也能出现在 stat 卡的
+    // client breakdown 中——它们没有 AI Tool Limits 账户组，不会进 limit card。
+    const clients = (stats && stats.periods && stats.periods.today && stats.periods.today.clients) || {};
+    const hasTokenData = Object.values(clients).some((value) => Number(value) > 0);
+    if (!hasTokenData) return limitItems;
+    return [...limitItems, { type: 'stat', metric: 'today' }];
   }
 
   // Applies a drag order to the list. The shared drag sort hands ids back
