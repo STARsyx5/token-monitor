@@ -81,7 +81,13 @@
     { id: 'cherrystudio', label: 'Cherry Studio' },
     { id: 'lmstudio', label: 'LM Studio' },
     { id: 'unsloth', label: 'Unsloth' },
-    { id: 'devin', label: 'Devin' }
+    { id: 'devin', label: 'Devin' },
+    // mavis (Mavis / MiniMax Code) is a locallyParsed SQLite reader
+    // (src/shared/providers/mavis/usage.js); it has no AI Tool Limits account
+    // group, so it never enters the limit-provider rail. It joins the catalog
+    // here so every client-facing surface (settings, tracked-clients picker,
+    // supported-tools table, session lists) recognises the id.
+    { id: 'mavis', label: 'Minimax Code', locallyParsed: true }
   ].map((client) => Object.freeze({
     defaultTracked: true,
     locallyParsed: false,

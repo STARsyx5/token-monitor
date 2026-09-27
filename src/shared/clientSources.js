@@ -10,6 +10,7 @@ const { claudeSessionRoots } = require('./providers/claude/paths');
 const { hermesProfileWatchDirs, resolveHermesHome } = require('./providers/hermes/profiles');
 const { kimiCodeSessionsHome, kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
 const { qoderCnDataPaths } = require('./providers/qodercn/usage');
+const { MAVIS_HOME } = require('./providers/mavis/usage');
 const { resolveReasonixStatsDir, REASONIX_SOURCE_CHECK_ID } = require('./providers/reasonix/paths');
 const { resolveDshSessionsDir, DSH_SOURCE_CHECK_ID } = require('./providers/dsh/paths');
 const {
@@ -363,6 +364,11 @@ function clientSourceRoots(clientsCsv, options = {}) {
     ...qoderCnPaths.dbPaths.map((dbPath) => ['qodercn-db', path.dirname(dbPath), dbPath]),
     ['qodercn-projects', qoderCnPaths.projectsDir]
   );
+  // mavis (Mavis / MiniMax Code) — pi-agent runtime SQLite in WAL mode at
+  // ~/.minimax/v2/sqlite. Registered here (not inline in collector.js) because
+  // v0.63 #810/#812/#813 moved every source root into this module. MAVIS_HOME
+  // already IS the sqlite dir, so it is registered as-is.
+  add('mavis', ['mavis-sqlite', MAVIS_HOME]);
   add('reasonix', [
     REASONIX_SOURCE_CHECK_ID,
     resolveReasonixStatsDir({ env: process.env, homeDir: home, platform: process.platform, cwdDir: process.cwd() })

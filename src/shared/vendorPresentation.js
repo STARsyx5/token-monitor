@@ -66,6 +66,13 @@
     { id: 'lmstudio', color: '#6C5CE7', widgetColor: '#8074E8' },
     { id: 'unsloth', color: '#40B85A' },
     { id: 'devin', color: '#000000', widgetInk: true },
+    // mavis (Mavis / MiniMax Code) shares the parent MiniMax brand, so it takes
+    // the same #f23f5d the `minimax` model vendor uses. The svg is a copy of
+    // minimax.svg; one v0.63 presentation row replaces the six hand-maintained
+    // renderer tables (clientColors / VENDOR_ORDER / VENDOR_LABELS /
+    // clientsWithIcon / styles.css rule / Widget Swift maps) that pre-#800
+    // edits needed.
+    { id: 'mavis', color: '#f23f5d', icon: 'minimax' },
     // Not tracked clients: model vendors and limits providers. A vendor shares
     // the colour of the client it names (moonshot/kimi, zai/zaiteam, xai/grok).
     { id: 'openrouter', label: 'OpenRouter', color: '#6566F1' },
