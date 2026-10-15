@@ -1409,7 +1409,13 @@ test('Factory account form keeps its setup copy and validates before saving', ()
   assert.match(preload, /saveCredential: \(providerId, values\) => ipcRenderer\.invoke\('limits:saveCredential', providerId, values\)/);
   assert.match(preload, /clearCredential: \(providerId\) => ipcRenderer\.invoke\('limits:clearCredential', providerId\)/);
   assert.match(main, /ipcMain\.handle\('limits:saveCredential', \(_event, providerId, values\) => credentialCommands\.saveCredential\(providerId, values\)\)/);
-  assert.match(main, /ipcMain\.handle\('limits:clearCredential', \(_event, providerId\) => credentialCommands\.clearCredential\(providerId\)\)/);
+  // Clear is no longer a one-liner: StepFun's browser session lives in a
+  // cookie jar rather than in settings, so clearing the stored values alone
+  // would leave a still-authenticated partition behind. It is also awaited:
+  // the reply crosses IPC, and a fire-and-forget wipe would race the user
+  // straight back into a session they just cleared.
+  assert.match(main, /ipcMain\.handle\('limits:clearCredential',[\s\S]{0,200}?credentialCommands\.clearCredential\(providerId\)/);
+  assert.match(main, /if \(providerId === 'stepfun'\) await clearStepfunLoginSession\(\);/);
   assert.doesNotMatch(main + preload, /limits:validateCredential|validateLimitCredential/);
   assert.equal(normalizeAccountField('factoryApiKey', ' " fk-live " '), 'fk-live');
   const projected = accountStatusProjection({ factoryApiKey: '' }, { FACTORY_API_KEY: 'auto-detected-key' });
@@ -2771,6 +2777,14 @@ test('main collectors share one live GUI limit credential resolver in every widg
   assert.match(limitsDeps, /fetch: electronLimitsFetch\(\)/);
   assert.match(limitsDeps, /resolveConfigSnapshot: \(\) => electronLimitsConfig\(\)/);
   assert.match(limitsDeps, /onClaudeWebCookieRenewed: persistClaudeWebCookieRenewal/);
+  // The scheduled collection, not the save-time probe, is what fills the
+  // panel. StepFun can only renew its token through a BrowserWindow, so a
+  // collector without a signer reports "unavailable" forever and — having no
+  // window to open — never even prompts. Saving goes through
+  // electronProviderDeps() and already had one, which is exactly why the
+  // symptom looked like "login works, quota never appears".
+  assert.match(limitsDeps, /signIn: electronStepfunSignIn/);
+  assert.match(limitsDeps, /logger: stepfunErrorLogger\(\)/);
   const renewalPersistence = functionBody(
     main,
     'persistClaudeWebCookieRenewal',

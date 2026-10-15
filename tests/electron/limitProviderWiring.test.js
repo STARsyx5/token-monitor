@@ -99,6 +99,7 @@ test('CREDENTIAL_SETTING_PATHS is exactly this set (the store is default-deny)',
     copilotApiToken: ['providers', 'copilot', 'apiToken'],
     zedCookie: ['providers', 'zed', 'cookie'],
     typesafeCookie: ['providers', 'typesafe', 'cookie'],
+    stepfunPassword: ['providers', 'stepfun', 'password'],
     stepfunToken: ['providers', 'stepfun', 'token'],
     notionCookie: ['providers', 'notion', 'cookie'],
     commandcodeCookie: ['providers', 'commandcode', 'cookie'],
@@ -162,7 +163,7 @@ test('LIMIT_PROVIDER_SETTING_KEYS is exactly this set (drives per-provider refre
     deepseek: ['deepseekApiKey'],
     devin: ['devinBearerToken', 'devinOrganization'],
     typesafe: ['typesafeCookie'],
-    stepfun: ['stepfunToken'],
+    stepfun: ['stepfunUsername', 'stepfunPassword', 'stepfunToken', 'stepfunRememberLogin'],
     notion: ['notionCookie', 'notionWorkspaceId'],
     openrouter: ['openrouterProfiles'],
     minimax: ['minimaxApiKey', 'minimaxApiRegion', 'minimaxBillingMode'],
@@ -275,8 +276,10 @@ test('settings:update normalizes provider fields and strips separately managed a
     'volcengineSecretAccessKey', 'volcengineRegion', 'volcengineAgentAccessKeyId',
     'volcengineAgentSecretAccessKey', 'volcengineAgentRegion', 'qoderCookie', 'qoderSite',
     'devinBearerToken', 'devinOrganization', 'alibabaCookie', 'alibabaVariant',
-    'traeAccessToken', 'traeDeviceId', 'zedCookie', 'typesafeCookie', 'stepfunToken',
-    'commandcodeCookie', 'kimiApiKey', 'kimiWebAccessToken', 'ollamaCookie', 'notionCookie', 'notionWorkspaceId'
+    'traeAccessToken', 'traeDeviceId', 'zedCookie', 'typesafeCookie',
+    'stepfunUsername', 'stepfunPassword', 'stepfunToken', 'stepfunRememberLogin',
+    'commandcodeCookie', 'kimiApiKey', 'kimiWebAccessToken', 'ollamaCookie',
+    'notionCookie', 'notionWorkspaceId'
   ].sort());
   for (const key of normalizedKeys) {
     const value = key === 'claudeWebCookie' ? 'sessionKey=sk-ant-test'
@@ -355,7 +358,7 @@ test('the external URL allowlist admits exactly the provider consoles it should'
     'https://commandcode.ai/',
     'https://dashboard.zed.dev/',
     'https://console.typesafe.ai/settings/billing',
-    'https://platform.stepfun.com/plan-usage',
+    'https://platform.stepfun.com/step-plan',
     'https://ollama.com/settings',
     'https://www.ollama.com/signin',
     'https://kimi.com/code',
