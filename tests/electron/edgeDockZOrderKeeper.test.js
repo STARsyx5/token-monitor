@@ -57,9 +57,7 @@ function makeKeeper(options = {}) {
 test('a topmost window standing above the dock is re-raised over it', async () => {
   const dock = fakeWindow(100);
   let stackNow = stack(entry(50), entry(100));
-  const { keeper } = makeKeeper({
-    probe: async () => { stackNow = stackNow; return stackNow; }
-  });
+  const { keeper } = makeKeeper({ probe: async () => stackNow });
 
   keeper.sync([dock]);
   await new Promise((resolve) => setImmediate(resolve));

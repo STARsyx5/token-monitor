@@ -1594,7 +1594,7 @@ test('Windows Edge Dock hands its live surfaces to a z-order keeper', (t) => {
   assert.equal(keeper.state.stops, 0, 'a running dock must not have released its keeper');
 });
 
-test('the Edge Dock releases its z-order keeper when it stops', (t) => {
+test('the Edge Dock releases its z-order keeper when it stops', () => {
   const keeper = fakeZOrderKeeper();
   const fixture = createFixture({ createZOrderKeeper: keeper });
   assert.ok(keeper.state.syncs.length > 0);
