@@ -1276,7 +1276,10 @@ function createEdgeDockController(deps) {
   // needs the same window list refreshed whenever those windows come or go —
   // built, destroyed, revealed or retracted.
   function syncZOrder() {
-    if (!running) {
+    // Windows-only, and not merely "the keeper ignores it elsewhere": a macOS
+    // dock must not so much as build the object that would install a system-wide
+    // hook.
+    if (!running || platform !== 'win32') {
       if (zOrderKeeper) zOrderKeeper.stop();
       return;
     }
