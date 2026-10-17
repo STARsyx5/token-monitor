@@ -254,3 +254,69 @@ test('StepFun account identity survives access-half rotation', async () => {
   assert.equal(first.status, 'ok');
   assert.equal(first.accountKey, second.accountKey);
 });
+
+test('the diagnostic log records how long the webid is, never the webid', async () => {
+  // main.js wraps every logger in stepfunErrorLogger, which writes the line
+  // verbatim to stepfun-diagnostic.log — and the settings panel tells the user
+  // in six languages that this exact file is what to attach to a bug report. So
+  // the raw Oasis-Webid in the request line put one half of the authenticating
+  // cookie pair into the one artifact this feature actively asks people to
+  // share. Every other line in this file reports presence or length.
+  //
+  // Written as a leak check against a marker value rather than a source pattern:
+  // a source pattern on the log call would still be satisfied by a build that
+  // logs the webid somewhere else in the same line.
+  const lines = [];
+  const secretDevice = 'webid-MUST-NOT-APPEAR-4f2b';
+  const token = `${jwt('access-id')}...${jwt(secretDevice)}`;
+  await fetchStepfunLimits({ stepfunToken: token }, {
+    env: {}, now: () => 1770000000000,
+    logger: (line) => lines.push(line),
+    fetch: async () => ({ ok: true, json: async () => ({
+      status: 1, five_hour_usage_left_rate: 0.8, weekly_usage_left_rate: 0.6,
+      five_hour_usage_reset_time: '1780000000', weekly_usage_reset_time: '1780500000'
+    }) })
+  });
+
+  assert.ok(lines.length > 0, 'a silent run would make the leak check below vacuous');
+  assert.ok(lines.some((line) => line.includes('webid')),
+    'the request line being checked has to exist, or this only proves the logger is quiet');
+  for (const line of lines) {
+    assert.equal(line.includes(secretDevice), false,
+      `the diagnostic log must not carry the raw webid, but this line does: ${line}`);
+  }
+});
+
+test('both credential lanes report as configured', () => {
+  // defaultAccountStatus() resolves exactly ONE field — status.credential — so
+  // with the password declared there, a token-only setup rendered "Not set"
+  // while its quota probe worked and its manual paste lane was live. That is
+  // the lane the form documents for the headless agent, so the pill was wrong
+  // for a supported configuration rather than for a broken one.
+  const declaration = require('../../src/shared/providers/stepfun/account');
+  // The registry hands accountStatus the provider's whole limits module, and the
+  // projection resolves through it — so the test passes the same shape.
+  const limits = require('../../src/shared/providers/stepfun/limits');
+  assert.equal(typeof declaration.accountStatus, 'function',
+    'the provider has to project both lanes itself; status.credential can only ever name one');
+
+  const tokenOnly = declaration.accountStatus({
+    settings: { stepfunToken: 'Oasis-Token=abc' }, env: {}, limits
+  });
+  assert.equal(tokenOnly.stepfunTokenConfigured, true, 'a pasted token alone is a working lane');
+  assert.equal(tokenOnly.stepfunTokenSource, 'settings');
+
+  const passwordOnly = declaration.accountStatus({
+    settings: { stepfunUsername: 'me@example.com', stepfunPassword: 'pw' }, env: {}, limits
+  });
+  assert.equal(passwordOnly.stepfunTokenConfigured, true, 'the browser sign-in lane counts too');
+  assert.equal(passwordOnly.stepfunTokenSource, 'settings');
+
+  const fromEnv = declaration.accountStatus({ settings: {}, env: { STEPFUN_TOKEN: 'Oasis-Token=abc' }, limits });
+  assert.equal(fromEnv.stepfunTokenConfigured, true, 'and so does the environment lane');
+  assert.equal(fromEnv.stepfunTokenSource, 'env');
+
+  const empty = declaration.accountStatus({ settings: {}, env: {}, limits });
+  assert.equal(empty.stepfunTokenConfigured, false, 'nothing configured still has to read as not set');
+  assert.equal(empty.stepfunTokenSource, '');
+});

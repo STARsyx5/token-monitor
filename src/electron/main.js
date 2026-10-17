@@ -36,6 +36,8 @@ const {
   createWorkbuddyLocalAuth,
   isSupportedWorkbuddyLocalAppPlatform
 } = require('./providers/workbuddy/localAuth');
+const { ACCOUNT_COOKIE_URL, COOKIE_URL, OASIS_TOKEN, OASIS_WEBID, disposeStepFunWindow, readOasisSessions, signInStepFunWithBrowser, stepfunPartition } = require('./providers/stepfun/login');
+const { stepfunAccount, verifyStepfunSession } = require('../shared/providers/stepfun/limits');
 const { createElectronLimitsFetch } = require('./limits/fetch');
 const {
   expandedBoundsForCollapse,
@@ -77,12 +79,238 @@ function ensureMimoExchangeFetch() {
   return mimoExchangeFetch;
 }
 
+// StepFun's password login has no HTTP equivalent: the endpoint lives behind a
+// WAF that only clears once the page's own JavaScript runs. So the desktop app
+// supplies the signer and limits.js calls it — the headless agent has no
+// BrowserWindow, and there a pasted token stays the only lane.
+//
+// A stored password makes every probe able to re-sign-in, which would mean a
+// login window on every collection tick. The sign-in partition persists, so
+// its Oasis cookies usually outlive the gap between ticks: read them first and
+// only open a window when the site says the session is gone. The cookie jar
+// does the expiry bookkeeping, which is exactly what a hand-rolled timer here
+// would get wrong — and expiry is not the only thing the jar can be wrong
+// about. See the check below.
+//
+// `fromPartition` is resolved per call rather than cached because it only
+// exists once the app is ready, and the partition is passed to the sign-in
+// window so the window and the cookie reader cannot drift apart.
+//
+// The partition depends on a user setting: `persist:` writes the Oasis cookies
+// into the user-data Cookies file so a restart does not log out, while the
+// throwaway variant keeps them in memory only. A missing setting means persist,
+// which is what a fresh install gets.
+//
+// Only an EXPLICIT negative opts out. The form stores '1'/'0' because the form
+// framework has no checkbox, but the same key can also arrive as a number or a
+// boolean from a hand-edited settings file, and the old `!== '0'` test read
+// `false` as "remember" — so a user who had switched the option off by hand got
+// a session written to disk and no way to see why. An unrecognised value keeps
+// the default rather than silently wiping the login the user already has.
+function stepfunRememberLogin() {
+  const value = settings?.stepfunRememberLogin;
+  if (value === null || value === undefined || value === '') return true;
+  return !['0', 'false', 'off', 'no'].includes(String(value).trim().toLowerCase());
+}
+
+// Reuse the stored cookies only if the site confirms they are a signed-in
+// session. platform.stepfun.com issues an anonymous Oasis-Token on page load,
+// so "the jar has a token" is true in a state that answers every quota call
+// with 401 "not a logined oasis account". Reusing one on that basis is not a
+// small inefficiency: the re-login path asks for a session again, reads the very
+// same anonymous cookie back, and the provider stays unauthorized with no
+// window ever shown to the user.
+//
+// Every origin that holds a pair is tried, not just one: after a sign-in the
+// live session lives on account.stepfun.com while platform.stepfun.com keeps
+// the anonymous token, so a single-origin read has a one-in-two chance of
+// looking at the wrong jar. `readOasisSessions` returns both, and the site
+// decides which is real.
+//
+// The 200 that proves the session is also the PLAN_URL body the quota probe
+// wants for the account label, so it is handed back on the session and the
+// probe can skip repeating the request.
+async function electronStepfunSignIn(options) {
+  // The partition is scoped to the account being signed in — see
+  // stepfunPartition. A jar shared by every account means the newest password
+  // login evicts the previous account's session, so only the most recent
+  // account could ever be renewed and every other StepFun row was left with a
+  // manual paste. This naming is new: an install whose session sits in the old
+  // unsuffixed partition signs in once through the window after the upgrade,
+  // then reuses the account's own jar from there on.
+  const partition = stepfunPartition({ remember: stepfunRememberLogin(), account: options?.username });
+  const loginSession = session.fromPartition(partition);
+  const logger = typeof options?.logger === 'function' ? options.logger : undefined;
+  const deps = { fetch: electronLimitsFetch(), logger };
+  for (const candidate of await readOasisSessions(loginSession)) {
+    if (!candidate.token) continue;
+    const verdict = await verifyStepfunSession(candidate, deps);
+    // `source` is which origin answered, which is diagnostic only — the session
+    // descriptor that crosses this boundary carries just the pair and the body.
+    if (verdict.ok) return { token: candidate.token, webid: candidate.webid, plan: verdict.body ?? null };
+    // Which origin the refused cookie came from is the first thing anyone needs
+    // when this stops working: the two hold different things (account.stepfun.com
+    // is where the login page issues its pair, platform.stepfun.com is where the
+    // quota page's own anonymous token lives) and the site check above reports a
+    // bare status code. Only written when something is actually refused, so a
+    // healthy probe still logs nothing beyond the two requests it makes.
+    logger?.(`stepfun refused the cookie held on ${String(candidate.source).replace(/^https:\/\//, '').replace(/\/$/, '')}`);
+  }
+  // Hand the same verdict down into the window flow, so a candidate the jar
+  // already holds is accepted or refused by the site there too instead of being
+  // judged by comparing cookie strings. The whole verdict crosses rather than
+  // just its boolean: the 200 behind an acceptance is a PLAN_URL response, and
+  // the login round that had to ask the site for a session would otherwise
+  // discard that body and fetch the same endpoint again moments later for the
+  // account label.
+  return signInStepFunWithBrowser({
+    ...options,
+    BrowserWindow,
+    session: loginSession,
+    partition,
+    logger,
+    verifySession: async (candidate) => verifyStepfunSession(candidate, deps)
+  });
+}
+
+// StepFun fails in ways the panel cannot explain — a stuck transport and a
+// rejected credential both surface as the same yellow "unavailable". Keep a
+// short trail on disk so the next report is a cause, not a guess.
+//
+// Bounded on purpose: this is written on every probe, so an unbounded file
+// would grow by a few hundred lines a day forever. Past the cap the oldest
+// half is dropped rather than rotated into a second file, because a second
+// file just moves the problem.
+// The cap counts LINES, not probes. A happy probe writes three of them (session
+// check, quota, plan), so 400 lines is roughly 130 probes of history — worth
+// stating, because "400" reads like far more than it is.
+const STEPFUN_DIAGNOSTIC_LIMIT = 400;
+const STEPFUN_DIAGNOSTIC_KEEP = Math.floor(STEPFUN_DIAGNOSTIC_LIMIT / 2);
+let stepfunDiagnosticPath = null;
+// Maintained incrementally. Every write below is synchronous, so nothing can
+// interleave and no counted line can go missing between two appends.
+let stepfunDiagnosticLines = 0;
+
+function appendStepFunDiagnostic(line) {
+  try {
+    const path = require('node:path');
+    if (!stepfunDiagnosticPath) {
+      stepfunDiagnosticPath = path.join(app.getPath('userData'), 'stepfun-diagnostic.log');
+      // A file left behind by an earlier run has to be counted once, here.
+      // Happy probes log nothing, so the common case is no file at all.
+      stepfunDiagnosticLines = fs.existsSync(stepfunDiagnosticPath)
+        ? fs.readFileSync(stepfunDiagnosticPath, 'utf8').split('\n').filter(Boolean).length
+        : 0;
+    }
+    fs.appendFileSync(stepfunDiagnosticPath, `${new Date().toISOString()} ${line}\n`);
+    stepfunDiagnosticLines += 1;
+    // The file is re-read only once the cap is actually passed. The previous
+    // version read it and rewrote half of it on EVERY append, so from the moment
+    // it crossed the cap each line cost a full read plus a half-file write —
+    // and with three lines per probe that is three rewrites per collection tick,
+    // on the main-process thread, forever.
+    if (stepfunDiagnosticLines <= STEPFUN_DIAGNOSTIC_LIMIT) return;
+    const kept = fs.readFileSync(stepfunDiagnosticPath, 'utf8')
+      .split('\n')
+      .slice(-STEPFUN_DIAGNOSTIC_KEEP);
+    stepfunDiagnosticLines = kept.filter(Boolean).length;
+    fs.writeFileSync(stepfunDiagnosticPath, `${kept.join('\n')}\n`);
+  } catch { /* diagnostics must never break the probe */ }
+}
+
+// Always records and always forwards. Wrapping only when the caller left the
+// logger out meant the settings-side probe — the one a user reaches for by
+// clicking Save — wrote no diagnostics at all, so the failure a user actually
+// reports was the one with no trail on disk.
+function stepfunErrorLogger(logger) {
+  return (message) => {
+    appendStepFunDiagnostic(message);
+    if (typeof logger === 'function') logger(message);
+  };
+}
+
+// Forget the browser login the way Clear forgets the credential: the cookie
+// jar IS the session, so dropping the settings while keeping an authenticated
+// partition lets the next probe sign in again from a session the user just
+// said to remove. Clearing the stored values alone is not enough.
+//
+// BOTH partitions are cleared, not just the one the current setting selects.
+// Switching "remember this login" off leaves the persisted cookies where they
+// were, which is the point of the switch; but Clear says "forget this login",
+// and a user who cleared it while the option was off would otherwise find the
+// old session still sitting in the persist partition, one toggle away from
+// coming back. Both also have to have their retained window released — a
+// destroyed window takes the network stack down with it, but a CLEAR is a
+// deliberate teardown, so destroy is right here.
+//
+// The account's own partition is cleared alongside the two unsuffixed ones:
+// the partition a sign-in lands in is now scoped to the username, so wiping
+// only the shared name would leave the very session being cleared alive in
+// `persist:stepfun-login-<hash>`. A username-less setup (token-only) has no
+// account partition, and clearing it twice would be a no-op rather than a
+// second pass, so the empty identity is skipped.
+//
+// Which identity owns a partition is decided by the RESOLVER, not by the
+// settings key: stepfunAccount() also reads TOKEN_MONITOR_STEPFUN_USERNAME and
+// STEPFUN_USERNAME, and electronStepfunSignIn scopes the partition to whatever
+// that resolver returns. Reading only settings.stepfunUsername here therefore
+// left an environment-configured account signed in on a partition Clear never
+// visited — the same class of bug as the one the comment above records, where
+// the settings were dropped but the session survived. Both the stored value and
+// the environment lane go in, resolved through the one function that defines
+// them, so a future third env alias cannot be added here and forgotten there.
+//
+// One name per call, and that is not a style choice. Measured on the Electron
+// this app ships (43.4.0): `cookies.remove(url, filter)` accepts a single
+// string and rejects a string ARRAY, a `{ name }` object and a Cookie object —
+// all three throw `Error processing argument at index 1, conversion failure`.
+// The array form this used to pass therefore threw every single time, and the
+// try/catch below swallowed it: Clear reported success, removed nothing, and
+// the next probe signed straight back in from the session the user had just
+// said to remove. A mock that accepts whatever it is handed cannot catch that,
+// so the test for this asserts the CALL SHAPE rather than that a call happened.
+async function clearStepfunLoginSession() {
+  const identities = [''];
+  for (const account of [
+    stepfunAccount(process.env, { stepfunUsername: settings?.stepfunUsername }),
+    stepfunAccount(process.env)
+  ]) {
+    if (account && !identities.includes(account)) identities.push(account);
+  }
+  for (const remember of [true, false]) {
+    for (const identity of identities) {
+      const partition = stepfunPartition({ remember, account: identity });
+      disposeStepFunWindow(partition);
+      for (const url of [ACCOUNT_COOKIE_URL, COOKIE_URL]) {
+        for (const name of [OASIS_TOKEN, OASIS_WEBID]) {
+          try {
+            await session.fromPartition(partition).cookies.remove(url, name);
+          } catch (error) {
+            appendStepFunDiagnostic(`stepfun clear failed on ${partition} ${url} ${name}: ${error.message}`);
+          }
+        }
+      }
+    }
+  }
+}
+
 // Settings-side provider probes take the same transport as the collector's.
 // Most of them are what an account save is gated on, so leaving one on the
 // global fetch refuses to save an account on exactly the machines this
 // transport exists for.
 function electronProviderDeps(deps = {}) {
-  return { ...deps, fetch: electronLimitsFetch(), mimoExchangeFetch: ensureMimoExchangeFetch() };
+  return {
+    ...deps,
+    fetch: electronLimitsFetch(),
+    mimoExchangeFetch: ensureMimoExchangeFetch(),
+    // Unlike the two above, these only default when the caller left them out
+    // — a caller that supplies its own signer must keep it.
+    signIn: deps.signIn || electronStepfunSignIn,
+    // The logger is wrapped even when the caller supplied one: recording and
+    // forwarding are not either/or, and skipping the record is what left the
+    // save-time failures unreported.
+    logger: stepfunErrorLogger(deps.logger)
+  };
 }
 const {
   DEFAULT_CLIENTS,
@@ -937,7 +1165,16 @@ function electronLimitsDeps() {
     onAntigravityCredentialsRenewed: persistAntigravityCredentialsRenewal,
     resolveWorkbuddyManagedCredential: (account, options) => workbuddyAccountService().resolveCredential(account, options),
     onThirdPartyCredentialsRenewed: persistThirdPartyCredentialsRenewal,
-    onThirdPartyAccountKeyResolved: persistThirdPartyAccountKey
+    onThirdPartyAccountKeyResolved: persistThirdPartyAccountKey,
+    // StepFun's quota can only be renewed through a real browser window, and
+    // the scheduled collection — not the save-time probe — is what feeds the
+    // panel. Without this the collector had no signer at all: it reported
+    // "unavailable" on every tick and, having no window to open, never even
+    // asked the user to sign in. The save path goes through
+    // electronProviderDeps() and already had one, which is exactly why saving
+    // appeared to work while the panel stayed yellow.
+    signIn: electronStepfunSignIn,
+    logger: stepfunErrorLogger()
   };
 }
 
@@ -8318,7 +8555,15 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('limits:saveCredential', (_event, providerId, values) => credentialCommands.saveCredential(providerId, values));
   ipcMain.handle('limits:listOrganizationChoices', (_event, providerId) => credentialCommands.listOrganizationChoices(providerId));
-  ipcMain.handle('limits:clearCredential', (_event, providerId) => credentialCommands.clearCredential(providerId));
+  // Clear is the one credential action that has to finish before the renderer
+// reports success: the reply goes back over IPC, and an unawaited cookie wipe
+// races it, so a user who cleared a StepFun login and immediately hit Refresh
+// could still be signed in from the jar the wipe had not reached yet.
+ipcMain.handle('limits:clearCredential', async (_event, providerId) => {
+    const result = await credentialCommands.clearCredential(providerId);
+    if (providerId === 'stepfun') await clearStepfunLoginSession();
+    return result;
+  });
   ipcMain.handle('opencode:saveCookie', async (_event, raw) => {
     const cookie = opencodeWeb.sanitizeCookieHeader(raw);
     if (!cookie) {
@@ -9255,6 +9500,10 @@ app.on('before-quit', () => {
   unregisterWindowToggleShortcut();
   edgeDockController?.stop();
   electronWorkbuddyLocalAuth.dispose();
+  // The StepFun sign-in window is retained on purpose (destroying it takes
+  // Chromium's network stack down), so it has to be released explicitly —
+  // nothing else owns it.
+  disposeStepFunWindow();
   if (skipForcedQuit) return;
   performQuit();
 });
